@@ -1,0 +1,30 @@
+# Vivado auto-generated project directories & caches
+.Xil/
+Camera.cache/
+Camera.hw/
+Camera.ip_user_files/
+Camera.runs/
+Camera.sim/
+
+# Checkpoints and temporary binary design files
+*.dcp
+
+# Vivado log and journal files
+*.log
+*.jou
+*.str
+*.backup.log
+*.backup.jou
+
+# Python caches and bytecode
+__pycache__/
+*.py[cod]
+
+# Captured frames / images (do not include captured images)
+*.png
+*.jpg
+*.jpeg
+*.bmp
+
+# Runtime artifacts and temp files
+dfx_runtime.txt
