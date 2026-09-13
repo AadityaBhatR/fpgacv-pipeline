@@ -1,0 +1,10 @@
+import wave
+from piper import PiperVoice
+
+voice = PiperVoice.load("en_US-lessac-medium.onnx", config_path="en_US-lessac-medium.onnx.json")
+
+# Synthesize directly to a WAV file or memory buffer
+with wave.open("test_output.wav", "wb") as wav_file:
+    voice.synthesize("Face tracking engaged. Pointing camera up.", wav_file)
+
+print("Audio synthesized to test_output.wav")

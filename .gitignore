@@ -28,3 +28,51 @@ __pycache__/
 
 # Runtime artifacts and temp files
 dfx_runtime.txt
+
+# Python Virtual Environments
+ai_stack/
+venv/
+.venv/
+env/
+
+# Python Bytecode & Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+build/
+dist/
+
+# Large Model Weights & ONNX Models (download via script/readme instead)
+*.onnx
+*.onnx.json
+*.bin
+*.pt
+*.safetensors
+*.gguf
+
+# Audio, Video & Test Artifacts
+*.wav
+*.pcm
+*.mp3
+*.mp4
+*.avi
+test_output*
+
+# Environment Variables & API Keys
+.env
+*.env
+
+# Hardware Synthesis & Simulation Artifacts (Vivado / GHDL)
+*.bit
+*.jou
+*.log
+.Xil/
+*.str
+work-obj*.cf
+
+# OS & Editor Artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
