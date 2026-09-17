@@ -73,12 +73,15 @@ always_comb begin
     crc_next = c;
 end
 
-always_ff @(posedge clk negedge rst) begin
+always_ff @(posedge clk or negedge rst) begin
     if(!rst) begin
         crc_reg <= 32'hFFFFFFFF;
     end
+    else if(crc_init) begin
+        crc_reg <= 32'hFFFFFFFF;
+    end
     else if(data_valid) begin
-            crc_reg <= crc_next;
+        crc_reg <= crc_next;
     end
 
 end
