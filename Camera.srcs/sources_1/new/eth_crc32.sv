@@ -26,13 +26,20 @@
 //      LEAST-significant BYTE first (i.e. reverse byte order from how you'd
 //      normally write the 32-bit value).
 //
-// Suggested ports (design your own -- this is just a starting contract):
+// Current ports (as implemented below):
 //   clk, rst
 //   crc_init      -- pulse: reset crc state to 32'hFFFFFFFF
 //   data_valid    -- pulse: data_in holds a new byte this cycle
 //   data_in[7:0]
-//   crc_reg[31:0] -- running (uninverted) CRC state
-//   crc_fcs[31:0] -- crc_reg ^ 32'hFFFFFFFF (the value to transmit)
+//   crc_out[31:0] -- crc_reg ^ 32'hFFFFFFFF (the value to transmit) -- this
+//                    module does NOT expose the raw pre-inversion crc_reg.
+//
+// Heads up for later: eth_mac_rx's documented residual-check trick (comparing
+// the running CRC against the magic constant 32'hC704DD7B after feeding in
+// the received FCS bytes) needs the RAW/uninverted crc_reg, not crc_out. If
+// you keep this single-output shape, either add a raw crc_reg output, or
+// have eth_mac_rx compare crc_out against the magic constant XORed with
+// 32'hFFFFFFFF instead.
 //
 // Implementation note: you can do the 8 bit-iterations either as a fully
 // unrolled combinational function (one byte processed per clock) or as a
@@ -42,20 +49,20 @@
 // =============================================================================
 
 module eth_crc32(
-    input logic clk, rst
+    input logic clk, rst,
     input logic crc_init,
     input logic data_valid,
     input logic [7:0] data_in,
 
-    output logic [31:0] crc_out;
+    output logic [31:0] crc_out
 );
 
-localparam  logic [7:0] POLY   = 32'hEDB88320;
+localparam  logic [31:0] POLY   = 32'hEDB88320;
             logic [31:0] crc_reg, crc_next;
 
 always_comb begin
     logic [31:0] c;
-    c = {24'h0, data_in};
+    c = crc_reg ^ {24'h0, data_in};
 
     for(int i = 0; i < 8; i++) begin
         if(c[0])
