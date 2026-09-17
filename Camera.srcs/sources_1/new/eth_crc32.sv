@@ -1,16 +1,8 @@
 // =============================================================================
 // eth_crc32
 //
-// Byte-serial Ethernet FCS (CRC-32) engine. This is the SAME CRC-32 used by
-// zlib/gzip/PNG, so you can verify your implementation in isolation before
-// it ever touches real RMII logic:
+// Byte-serial Ethernet FCS (CRC-32) engine. 
 //
-//   python3 -c "import zlib; print(hex(zlib.crc32(b'123456789')))"
-//   -> 0xcbf43926
-//
-// Feed the ASCII bytes of "123456789" in one at a time with crc_init pulsed
-// once at the start, and after the 9th byte crc_reg XOR 32'hFFFFFFFF should
-// read 32'hcbf43926.
 //
 // Algorithm (reflected form, processes LSb-first per byte -- matches the
 // bit order Ethernet transmits on the wire):
@@ -26,20 +18,16 @@
 //      LEAST-significant BYTE first (i.e. reverse byte order from how you'd
 //      normally write the 32-bit value).
 //
-// Current ports (as implemented below):
+// Current ports 
 //   clk, rst
 //   crc_init      -- pulse: reset crc state to 32'hFFFFFFFF
 //   data_valid    -- pulse: data_in holds a new byte this cycle
 //   data_in[7:0]
-//   crc_out[31:0] -- crc_reg ^ 32'hFFFFFFFF (the value to transmit) -- this
-//                    module does NOT expose the raw pre-inversion crc_reg.
-//
-// Heads up for later: eth_mac_rx's documented residual-check trick (comparing
-// the running CRC against the magic constant 32'hC704DD7B after feeding in
-// the received FCS bytes) needs the RAW/uninverted crc_reg, not crc_out. If
-// you keep this single-output shape, either add a raw crc_reg output, or
-// have eth_mac_rx compare crc_out against the magic constant XORed with
-// 32'hFFFFFFFF instead.
+//   crc_out[31:0]     -- crc_reg ^ 32'hFFFFFFFF (the value to transmit)
+//   crc_reg_raw[31:0] -- running UNINVERTED CRC state, for eth_mac_rx's
+//                        residual-check trick (compare against the magic
+//                        constant 32'hC704DD7B after feeding in the
+//                        received FCS bytes)
 //
 // Implementation note: you can do the 8 bit-iterations either as a fully
 // unrolled combinational function (one byte processed per clock) or as a
@@ -54,7 +42,8 @@ module eth_crc32(
     input logic data_valid,
     input logic [7:0] data_in,
 
-    output logic [31:0] crc_out
+    output logic [31:0] crc_out,
+    output logic [31:0] crc_reg_raw
 );
 
 localparam  logic [31:0] POLY   = 32'hEDB88320;
@@ -86,7 +75,8 @@ always_ff @(posedge clk or negedge rst) begin
 
 end
 
-assign crc_out = crc_reg ^ 32'hFFFFFFFF;
+assign crc_out     = crc_reg ^ 32'hFFFFFFFF;
+assign crc_reg_raw = crc_reg;
 
 
 endmodule
