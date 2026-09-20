@@ -38,61 +38,10 @@
 // Minimum frame duration (excluding IFG), for sizing testbench timeouts:
 // 7+1+6+6+2+46+4 = 72 bytes = 288 clocks @ 50 MHz = 5.76 us.
 //
-// -----------------------------------------------------------------------
-// Suggested internal architecture
-// -----------------------------------------------------------------------
-// Two nested counters instead of one giant state machine per byte:
-//   - `field` (the states below) -- which section of the frame you're in.
-//   - `byte_cnt` -- which byte within the current field (resets to 0 when
-//     `field` changes).
-//   - `nibble_cnt` (0..3) -- which of the 4 clocks for the CURRENT byte.
-//     nibble_cnt selects which 2-bit slice of the byte goes on txd:
-//       0 -> byte[1:0], 1 -> byte[3:2], 2 -> byte[5:4], 3 -> byte[7:6].
-//     On nibble_cnt hitting 3, advance byte_cnt (and roll to the next
-//     `field` if byte_cnt has reached that field's length).
-// A clean way to pick "the byte to transmit right now": a combinational
-// mux/case on `field` (and `byte_cnt` for the multi-byte fields) producing
-// a single `current_tx_byte` wire, then one shared piece of logic drives
-// `rmii_txd <= current_tx_byte[nibble_cnt*2 +: 2]` regardless of field.
-// That keeps the nibble-serialization logic written exactly once.
-//
-// -----------------------------------------------------------------------
-// FSM states
-// -----------------------------------------------------------------------
-//   IDLE       -- wait for tx_start pulse. Latch dest_mac/ethertype (the
-//                 caller must hold these stable from tx_start through the
-//                 end of the frame). Pulse crc_init to eth_crc32. Reset
-//                 byte_cnt/nibble_cnt/payload byte counter to 0.
-//   PREAMBLE   -- 7 bytes of 8'h55. tx_en = 1 throughout (in fact tx_en
-//                 stays 1 for every state except IDLE and IFG).
-//   SFD        -- 1 byte, 8'hD5.
-//   DEST_MAC   -- 6 bytes from the latched dest_mac. Feed each byte to
-//                 eth_crc32 (data_valid pulse, once per 4 clocks, aligned
-//                 with nibble_cnt == 3 i.e. the last clock of each byte)
-//                 -- CRC coverage starts here.
-//   SRC_MAC    -- 6 bytes, your own MAC. Feed CRC.
-//   ETHERTYPE  -- 2 bytes from the latched ethertype. Feed CRC.
-//   PAYLOAD    -- assert payload_ready for one clock every 4 clocks
-//                 (whenever nibble_cnt == 3, i.e. you're about to need the
-//                 NEXT byte), latch payload_data when payload_valid = 1,
-//                 drive it onto txd over the following 4 clocks, feed CRC.
-//                 Track a running payload-byte counter. If payload_last
-//                 arrives before that counter reaches 46, keep driving
-//                 zero bytes (still feeding CRC, still counting) until it
-//                 does -- real frames shorter than 46B must be zero-padded.
-//   FCS        -- read crc_out from eth_crc32 (should be stable/settled by
-//                 the time you get here -- confirm your eth_crc32's
-//                 always_comb has no unintended combinational delay chain
-//                 issue). Drive its 4 bytes, LEAST-significant-byte first.
-//                 Do NOT feed these bytes back into the CRC engine.
-//   IFG        -- deassert tx_en. Hold idle for >= 12 byte-times (48
-//                 clocks) -- a free-running clock counter is enough, no
-//                 nibble/byte tracking needed here. Then return to IDLE
-//                 and clear busy.
-//
-// Keep `busy` asserted from tx_start until IFG completes, so callers know
-// not to iszsue another tx_start mid-frame. rst should force you back to
-// IDLE/tx_en=0 regardless of what state you were in.
+// Known limitation: PAYLOAD has no backpressure/stall support -- whatever
+// is on payload_data must be valid the same cycle payload_ready is high.
+// Fine for a testbench driver or a packetizer reading out of a buffer;
+// would need reworking for a source that can't guarantee that.
 //
 // Suggested ports (design your own):
 //   clk, rst                                   -- 50 MHz eth_ref_clk domain
@@ -101,97 +50,226 @@
 //   rmii_txd[1:0], rmii_tx_en
 // =============================================================================
 
-
 module eth_mac_tx(
-    input logic clk,rst,
-    input logic tx_start,
-    input logic [47:0] dest_mac,
-    input logic [47:0] src_mac,
-    input logic [15:0] ethertype,
-    input logic [7:0] payload_data, 
-    input logic payload_valid, payload_last, payload_ready,
-    output logic rmii_txd[1:0]
-    output logic rmii_tx_en;
-    
+    input  logic clk, rst,
+    input  logic tx_start,
+    input  logic [47:0] dest_mac,
+    input  logic [47:0] src_mac,
+    input  logic [15:0] ethertype,
+    output logic busy,
+
+    input  logic [7:0] payload_data,
+    input  logic payload_valid,
+    input  logic payload_last,
+    output logic payload_ready,
+
+    output logic [1:0] rmii_txd,
+    output logic rmii_tx_en
 );
-    logic busy;
-    logic [1:0] cur_data;
-    int cnt_data = 0;
 
-
-    typedef enum (IDLE, PREAMBLE, SFD, DEST_MAC, SRC_MAC, PAYLOAD, FCS, IFG) state_t;
+    typedef enum {IDLE, PREAMBLE, SFD, DEST_MAC, SRC_MAC, ETHERTYPE, PAYLOAD, FCS, IFG} state_t;
     state_t current_state, next_state;
 
-    localparam int preamble = 8'h55;
-    localparam int k_preamble = 1'd8;
-    localparam int sfd      = 8'hD5; 
-    localparam int k_sfd    = 1'd1;
+    localparam logic [7:0] preamble = 8'h55;
+    localparam logic [7:0] sfd      = 8'hD5;
+
+    // field lengths in dibit-clocks (1 byte = 4 clocks)
+    localparam int k_preamble        = 7*4;
+    localparam int k_sfd             = 1*4;
+    localparam int k_addr            = 6*4;
+    localparam int k_ethertype       = 2*4;
+    localparam int k_fcs             = 4*4;
+    localparam int k_ifg             = 12*4;
+    localparam int MIN_PAYLOAD_BYTES = 46;
+
+    int cnt_data;
+    logic [2:0] byte_idx;
+    logic [1:0] dibit_idx;
+    assign byte_idx  = cnt_data[4:2];
+    assign dibit_idx = cnt_data[1:0];
+
+    logic [47:0] dest_mac_lat, src_mac_lat;
+    logic [15:0] ethertype_lat;
+
+    int payload_byte_cnt;
+    logic [7:0] payload_byte_lat;
+    logic payload_ended;
+
+    logic [7:0] cur_byte;
+    logic [1:0] cur_data;
+    logic tx_en_comb;
+
+    logic crc_init, crc_valid;
+    logic [7:0] crc_din;
+    logic [31:0] crc_out;
+
+    eth_crc32 u_crc (
+        .clk(clk),
+        .rst(~rst),          // eth_crc32 is active-low/async, we're active-high/sync
+        .crc_init(crc_init),
+        .data_valid(crc_valid),
+        .data_in(crc_din),
+        .crc_out(crc_out)
+    );
+
+    assign busy = (current_state != IDLE);
 
     always_ff @(posedge clk) begin
-        if(rst) begin
-            current_state <= IDLE;
-            busy <= 0;
-            cur_data <= 2'b00;
-            cnt_data <= 0;
-            rmii_txd <= 2'b00;
-            rmii_tx_en <= 1'b0;
+        if (rst) begin
+            current_state    <= IDLE;
+            cnt_data         <= 0;
+            dest_mac_lat     <= '0;
+            src_mac_lat      <= '0;
+            ethertype_lat    <= '0;
+            payload_byte_cnt <= 0;
+            payload_byte_lat <= 8'h00;
+            payload_ended    <= 1'b0;
+            rmii_txd         <= 2'b00;
+            rmii_tx_en       <= 1'b0;
         end
         else begin
-            if(next_state != current_state) begin
+            current_state <= next_state;
+
+            // per-field dibit counter
+            if (next_state != current_state)
                 cnt_data <= 0;
-            end    
-            else begin
+            else
                 cnt_data <= cnt_data + 1;
+
+            // latch header fields once, when a new frame is accepted
+            if (current_state == IDLE && tx_start) begin
+                dest_mac_lat  <= dest_mac;
+                src_mac_lat   <= src_mac;
+                ethertype_lat <= ethertype;
             end
 
-            
+            if (next_state == PAYLOAD && current_state != PAYLOAD) begin
+                payload_byte_cnt <= 0;
+                payload_ended    <= 1'b0;
+            end
+            else if (current_state == PAYLOAD) begin
+                // cut-through: latch the byte the same cycle it's accepted.
+                // once ended, keep re-latching zero each byte for padding --
+                // payload_ended must NOT affect the byte already in flight
+                // (that's handled by the dibit_idx != 0 hold path below).
+                if (dibit_idx == 2'd0) begin
+                    if (!payload_ended && payload_valid) begin
+                        payload_byte_lat <= payload_data;
+                        if (payload_last)
+                            payload_ended <= 1'b1;
+                    end
+                    else if (payload_ended) begin
+                        payload_byte_lat <= 8'h00;
+                    end
+                end
+                if (dibit_idx == 2'd3)
+                    payload_byte_cnt <= payload_byte_cnt + 1;
+            end
+
+            // registered pin outputs (lets synthesis pack these into IOB flops)
+            rmii_txd   <= cur_data;
+            rmii_tx_en <= tx_en_comb;
         end
-       
     end
 
     always_comb begin
-        next_state = current_state;
-        
+        next_state    = current_state;
+        cur_byte      = 8'h00;
+        tx_en_comb    = 1'b1;
+        crc_init      = 1'b0;
+        crc_valid     = 1'b0;
+        crc_din       = 8'h00;
+        payload_ready = 1'b0;
 
-        case(state)
-        IDLE: begin
-            rmii_tx_en <= 1'b0;
-            if(tx_start) begin
-                state = PREAMBLE;
+        case (current_state)
+            IDLE: begin
+                tx_en_comb = 1'b0;
+                if (tx_start) begin
+                    next_state = PREAMBLE;
+                    crc_init   = 1'b1;
+                end
             end
-        end
 
-        PREAMBLE: begin
-            if(cnt_data == k_preamble) begin
-                next_state = SFD;    
+            PREAMBLE: begin
+                cur_byte = preamble;
+                if (cnt_data == k_preamble - 1)
+                    next_state = SFD;
             end
-            rmii_tx_en <= 1'b1;
-            cur_data = preamble[cnt_data*2-1,cnt_data*2-2];
-        end 
-        SFD: begin
-            rmii_tx_en <= 1'b1;
-            cur_data = sfd[cnt_data*2-1,cnt_data*2-2];
-        end
-        DEST_MAC: begin
-            rmii_tx_en <= 1'b1;
-        end
-        SRC_MAC: begin
-            rmii_tx_en <= 1'b1;
-        end
-        PAYLOAD: begin
-            rmii_tx_en <= 1'b1;
-        end
-        FCS: begin
-            rmii_tx_en <= 1'b1;
-        end 
-        IFG: begin
-            rmii_tx_en <= 1'b1;
-        end 
-        
-        endcase 
-    
+
+            SFD: begin
+                cur_byte = sfd;
+                if (cnt_data == k_sfd - 1)
+                    next_state = DEST_MAC;
+            end
+
+            DEST_MAC: begin
+                cur_byte = dest_mac_lat[8*(5-byte_idx) +: 8];
+                if (dibit_idx == 2'd3) begin
+                    crc_valid = 1'b1;
+                    crc_din   = cur_byte;
+                end
+                if (cnt_data == k_addr - 1)
+                    next_state = SRC_MAC;
+            end
+
+            SRC_MAC: begin
+                cur_byte = src_mac_lat[8*(5-byte_idx) +: 8];
+                if (dibit_idx == 2'd3) begin
+                    crc_valid = 1'b1;
+                    crc_din   = cur_byte;
+                end
+                if (cnt_data == k_addr - 1)
+                    next_state = ETHERTYPE;
+            end
+
+            ETHERTYPE: begin
+                cur_byte = ethertype_lat[8*(1-byte_idx) +: 8];
+                if (dibit_idx == 2'd3) begin
+                    crc_valid = 1'b1;
+                    crc_din   = cur_byte;
+                end
+                if (cnt_data == k_ethertype - 1)
+                    next_state = PAYLOAD;
+            end
+
+            PAYLOAD: begin
+                // dibit 0 of a byte: either grab a new real byte, or output
+                // zero for padding. dibits 1-3: just hold whatever byte we
+                // latched at dibit 0, regardless of payload_ended -- this
+                // must not get short-circuited once the last byte arrives.
+                if (dibit_idx == 2'd0) begin
+                    payload_ready = !payload_ended;
+                    cur_byte = (!payload_ended && payload_valid) ? payload_data : 8'h00;
+                end
+                else begin
+                    cur_byte = payload_byte_lat;
+                end
+
+                if (dibit_idx == 2'd3) begin
+                    crc_valid = 1'b1;
+                    crc_din   = cur_byte;
+                    if (payload_ended && (payload_byte_cnt + 1 >= MIN_PAYLOAD_BYTES))
+                        next_state = FCS;
+                end
+            end
+
+            FCS: begin
+                cur_byte = crc_out[8*byte_idx +: 8]; // byte_idx 0..3 -> LSB byte first
+                if (cnt_data == k_fcs - 1)
+                    next_state = IFG;
+            end
+
+            IFG: begin
+                tx_en_comb = 1'b0;
+                if (cnt_data == k_ifg - 1)
+                    next_state = IDLE;
+            end
+
+            default: next_state = IDLE;
+        endcase
+
+        // shared nibble slicer: 2 bits/clock, LSB pair of the byte first
+        cur_data = cur_byte[dibit_idx*2 +: 2];
     end
-
-
 
 endmodule
