@@ -17,9 +17,11 @@
 //                 Compute ip_total_length = 20 (IP hdr) + 8 (UDP hdr)
 //                                            + payload_length.
 //                 Compute udp_length      = 8 + payload_length.
-//                 Call eth_mac_tx.tx_start with your chosen dest_mac
-//                 (hardcoded until milestone 5's ARP responder exists)
-//                 and ethertype = 16'h0800 (IPv4).
+//                 Call eth_mac_tx.tx_start with dest_mac = eth_pkg::HOST_MAC
+//                 (hardcoded until milestone 5's ARP responder exists),
+//                 src_mac = eth_pkg::FPGA_MAC (eth_mac_tx takes this as a
+//                 port too, it's not baked in), and ethertype =
+//                 eth_pkg::ETHERTYPE_IPV4.
 //   IP_HDR     -- stream these 20 bytes to eth_mac_tx's payload_data/valid,
 //                 MSB-first within each multi-byte field:
 //                   byte 0    : 8'h45              (version=4, IHL=5)
