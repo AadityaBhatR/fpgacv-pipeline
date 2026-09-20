@@ -1,0 +1,11 @@
+# Already present in ai_stack/ as of this writing:
+faster-whisper
+numpy
+httpx
+
+# Needed, not yet installed in ai_stack/:
+piper-tts
+Pillow
+
+# Needed separately: an Ollama install with `ollama pull qwen2.5vl:7b` run
+# once (see vlm_client.py) -- not a pip package.

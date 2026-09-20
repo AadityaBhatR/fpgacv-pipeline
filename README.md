@@ -128,12 +128,11 @@ Qwen2.5-VL-7B.
 
 ### 4. Run the host pipeline
 ```bash
-python host/main.py \
-  --video-port 5001 \
-  --audio-port 5002 \
-  --telemetry-port 5003 \
-  --return-port 5004
+cd host
+python -m orchestrator.main --fpga-ip 192.168.1.100
 ```
+Video/audio/telemetry ports are fixed by `docs/wire_protocol.md` (5001-5004);
+see that doc for the full packet layout both sides build against.
 
 ### 5. Verify the link
 - Confirm video packets arrive on port 5001 and render in the keyframe
