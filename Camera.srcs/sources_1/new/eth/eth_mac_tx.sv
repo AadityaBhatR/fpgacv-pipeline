@@ -108,8 +108,10 @@ module eth_mac_tx(
     input logic [47:0] dest_mac,
     input logic [47:0] src_mac,
     input logic [15:0] ethertype,
-    input logic [7:0] payload_data, payload_valid, payload_last, payload_ready,
-    output logic rmii_txd[1:0], rmii_tx_en;
+    input logic [7:0] payload_data, 
+    input logic payload_valid, payload_last, payload_ready,
+    output logic rmii_txd[1:0]
+    output logic rmii_tx_en;
     
 );
     logic busy;
@@ -132,35 +134,58 @@ module eth_mac_tx(
             cur_data <= 2'b00;
             cnt_data <= 0;
             rmii_txd <= 2'b00;
-            rmii_tx_en <= 2'b00;
+            rmii_tx_en <= 1'b0;
         end
-
         else begin
+            if(next_state != current_state) begin
+                cnt_data <= 0;
+            end    
+            else begin
+                cnt_data <= cnt_data + 1;
+            end
+
             
         end
-    
+       
     end
 
     always_comb begin
         next_state = current_state;
+        
 
         case(state)
         IDLE: begin
+            rmii_tx_en <= 1'b0;
+            if(tx_start) begin
+                state = PREAMBLE;
+            end
+        end
 
-        end
         PREAMBLE: begin
-        end
+            if(cnt_data == k_preamble) begin
+                next_state = SFD;    
+            end
+            rmii_tx_en <= 1'b1;
+            cur_data = preamble[cnt_data*2-1,cnt_data*2-2];
+        end 
         SFD: begin
+            rmii_tx_en <= 1'b1;
+            cur_data = sfd[cnt_data*2-1,cnt_data*2-2];
         end
         DEST_MAC: begin
+            rmii_tx_en <= 1'b1;
         end
         SRC_MAC: begin
+            rmii_tx_en <= 1'b1;
         end
         PAYLOAD: begin
+            rmii_tx_en <= 1'b1;
         end
         FCS: begin
+            rmii_tx_en <= 1'b1;
         end 
         IFG: begin
+            rmii_tx_en <= 1'b1;
         end 
         
         endcase 
